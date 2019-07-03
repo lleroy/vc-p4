@@ -171,20 +171,25 @@ compare non-open files to the depot version."
 (defun vc-p4-dir-status (dir update-function)
   "Find information for `vc-dir'."
   ;; XXX: this should be asynchronous.
-  (let ((lists (p4-lowlevel-fstat 
+  (let ((files (p4-lowlevel-fstat 
                 (format "%s/..." (directory-file-name (expand-file-name dir)))
                 nil t)))
-    (when (stringp (caar lists))
-      (setq lists (list lists)))
-    (dolist (this-list lists)
-      (let* ((this-file (cdr (assoc "clientFile" this-list)))
-             (state (vc-p4-state this-file this-list t t)))
-        (unless (eq state 'up-to-date)
-          (funcall update-function
-                   (list
-                    (list (file-relative-name this-file dir) state))
-                   t))))
-    (funcall update-function nil nil)))
+    (when (stringp (caar files))
+      (setq files (list files)))
+    )
+  (vc-p4-dir-status-files (dir files update-function))
+  )
+
+(defun vc-p4-dir-status-files (_dir files update-function)
+  (dolist (this-list files)
+    (let* ((this-file (cdr (assoc "clientFile" this-list)))
+           (state (vc-p4-state this-file this-list t t)))
+      (unless (eq state 'up-to-date)
+        (funcall update-function
+                 (list
+                  (list (file-relative-name this-file dir) state))
+                 t))))
+  (funcall update-function nil nil))
 
 (defun vc-p4-working-revision (file)
   "Returns the Perforce version of FILE."
@@ -235,9 +240,7 @@ special case of a Perforce file that is added but not yet committed."
            ;; for 'needs-patch and 'needs-merge.
            (concat "P4:" rev)))))
 
-(defun vc-p4-register (files &optional rev comment)
-  (if (and rev (not (string= rev "1")))
-      (error "Can't specify revision when registering Perforce file."))
+(defun vc-p4-register (files &optional comment)
   (if (and comment (not (string= comment "")))
       (error "Can't specify comment when registering Perforce file."))
   ;; In emacs-23 vc-register has a list of files as a parameter,
@@ -313,11 +316,7 @@ comment COMMENT."
 	(vc-p4-state file nil t)))))
 
 ;;; FIXME: this should not have a DESTFILE argument
-(defun vc-p4-checkout (file &optional editable rev destfile)
-  (if (and editable destfile (not (string= file destfile)))
-      (error "Can't lock a Perforce file in an alternate location."))
-  (if (string= file destfile)
-      (setq destfile nil))
+(defun vc-p4-checkout (file &optional rev)
   (let ((default-directory (file-name-directory file))
 	buffer)
     ; Make sure we've got all the current state of the file
@@ -327,14 +326,9 @@ comment COMMENT."
       (setq rev (vc-file-getprop file 'vc-workfile-version)))
      ((string= rev "")
       (setq rev (vc-file-getprop file 'vc-latest-version))))
-    (if destfile
-	(progn (setq buffer (p4-lowlevel-print file rev 'buffer t))
-	       (set-buffer buffer)
-	       (write-file destfile))
-      (if (not (string= rev (vc-file-getprop file 'vc-workfile-version)))
-	  (p4-lowlevel-sync file rev))
-      (if editable
-	  (p4-lowlevel-edit file))))
+    (if (not (string= rev (vc-file-getprop file 'vc-workfile-version)))
+        (p4-lowlevel-sync file rev))
+    (p4-lowlevel-edit file))
   (vc-p4-state file nil t))
 
 (defun vc-p4-revert (file contents-done)
@@ -351,7 +345,7 @@ comment COMMENT."
 	(vc-file-clearprops file)
       (vc-p4-state file nil t))))
 
-(defun vc-p4-merge (file rev1 rev2)
+(defun vc-p4-merge-file (file rev1 rev2)
   "Merge changes into Perforce FILE from REV1 to REV2."
   (p4-lowlevel-integrate file file rev1 rev2 t)
   (p4-lowlevel-resolve file)
@@ -507,7 +501,7 @@ files under the default directory otherwise."
 	  ("^date: \\(.+\\)" (1 'change-log-date))
 	  ("^summary:[ \t]+\\(.+\\)" (1 'log-view-message))))))
 
-(defun vc-p4-diff (file-or-files &optional rev1 rev2 buff)
+(defun vc-p4-diff (file-or-files &optional rev1 rev2 buff _async)
   "Do a Perforce diff."
   (let* ((buffer (or (bufferp buff) (get-buffer-create "*vc-diff*")))
          (files (if (atom file-or-files) (list file-or-files) file-or-files))
