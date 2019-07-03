@@ -1,11 +1,20 @@
 ;;; vc-p4.el --- Integrate Perforce support into VC mode in Emacs 21
 
+;; Copyright (C) 2009, 2010 Magnus Henoch
 ;; Copyright (C) 2002 Curl Corporation.
 
 ;; Author: Jonathan Kamens <jik@kamens.brookline.ma.us>
-;; Maintainer: Jonathan Kamens <jik@kamens.brookline.ma.us>
+;; Maintainer: Magnus Henoch <magnus.henoch@gmail.com>
 
-;; $Id: //guest/jonathan_kamens/vc-p4/vc-p4.el#1 $
+;; $Id: //guest/magnus_henoch/vc-p4/vc-p4.el#27 $
+;; The path above is on the Perforce server public.perforce.com:1666.
+;; You can get this file using a P4 client talking to that depot, or
+;; from the URL
+;; http://public.perforce.com/guest/magnus_henoch/vc-p4/vc-p4.el.
+
+;; This version is intended for Emacs 23 and later; for Emacs 22 or
+;; earlier, you might want the original version:
+;; http://public.perforce.com/guest/jonathan_kamens/vc-p4/vc-p4.el.
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -24,8 +33,8 @@
 
 ;;; Commentary:
 
-;; This file adds support for Perforce to VC mode in Emacs 21 and any
-;; other Emacs variant which uses the VC mode included in Emacs 21.
+;; This file adds support for Perforce to VC mode in Emacs 23 and any
+;; other Emacs variant which uses the VC mode included in Emacs 23.
 ;;
 ;; To use this file, you also need p4-lowlevel.el somewhere in your
 ;; load path (or load it explicitly with "load" if it's not in your
@@ -42,7 +51,7 @@
 ;;
 ;; You can't use this support and the full functionality of Rajesh
 ;; Vaidheeswarran's "p4.el" at the same time.  You can, however, use
-;; most of p4.el's functionality by setting the customization variable
+;; much of p4.el's functionality by setting the customization variable
 ;; "p4-do-find-file" to nil.  This will prevent p4.el from attempting
 ;; to "take ownership" of a Perforce file when you load it, but it
 ;; will allow you to use all of the p4.el commands that don't apply to
@@ -51,7 +60,12 @@
 ;;; Code:
 
 (eval-when-compile
+  (require 'vc-hooks)
   (require 'vc)
+  (require 'ediff))
+;; FIXME: setq ediff-quit-hook maybe should be add-hook...
+
+(eval-and-compile
   (require 'p4-lowlevel))
 
 (if (not (memq 'P4 vc-handled-backends))
@@ -59,185 +73,6 @@
 ; This is useful during development to ensure that we can simply
 ; reeval this buffer to get any new functions that have been added.
 (put 'P4 'vc-functions nil)
-
-; We need to fix some functions that are broken in vc.el.
-
-(defun vc-print-log ()
-  "List the change log of the current buffer in a window."
-  (interactive)
-  (vc-ensure-vc-buffer)
-  (let* ((file buffer-file-name)
-	 (use-log-view (memq (vc-backend file) '(CVS RCS SCCS))))
-    (vc-call print-log file)
-    (set-buffer "*vc*")
-    (pop-to-buffer (current-buffer))
-    (if (and use-log-view (fboundp 'log-view-mode)) (log-view-mode))
-    (vc-exec-after
-     `(progn
-	(goto-char (point-max)) (forward-line -1)
-	(while (looking-at "=*\n")
-	  (delete-char (- (match-end 0) (match-beginning 0)))
-	  (forward-line -1))
-	(goto-char (point-min))
-	(if (looking-at "[\b\t\n\v\f\r ]+")
-	    (delete-char (- (match-end 0) (match-beginning 0))))
-	(shrink-window-if-larger-than-buffer)
-	;; move point to the log entry for the current version
-	(if (and use-log-view (fboundp 'log-view-goto-rev))
-	    (log-view-goto-rev ',(vc-workfile-version file))
-	  (if (vc-find-backend-function ',(vc-backend file) 'show-log-entry)
-	      (vc-call-backend ',(vc-backend file)
-			       'show-log-entry
-			       ',(vc-workfile-version file))))))))
-
-(if (not (fboundp 'vc-default-previous-version))
-    (defun vc-previous-version (rev)
-      "Guess the version number immediately preceding REV."
-      (if (string-match "^[0-9]+$" rev)
-	  (number-to-string (- (string-to-number rev) 1))
-	(let ((branch (vc-branch-part rev))
-	      (minor-num (string-to-number (vc-minor-part rev))))
-	  (if (> minor-num 1)
-	      ;; version does probably not start a branch or release
-	      (concat branch "." (number-to-string (1- minor-num)))
-	    (if (vc-trunk-p rev)
-		;; we are at the beginning of the trunk --
-		;; don't know anything to return here
-		""
-	      ;; we are at the beginning of a branch --
-	      ;; return version of starting point
-	      (vc-branch-part branch)))))))
-
-(if (not (fboundp 'vc-default-resolve-select-yours))
-    (defun vc-maybe-resolve-conflicts (file status &optional name-A name-B)
-      (vc-resynch-buffer file t (not (buffer-modified-p)))
-      (if (zerop status) (message "Merge successful")
-	(if (fboundp 'smerge-mode) (smerge-mode 1))
-	(if (y-or-n-p "Conflicts detected.  Resolve them now? ")
-	    (if (and (fboundp 'smerge-ediff)
-		     (not (vc-find-backend-function (vc-backend file)
-						    'resolve-select-yours)))
-		(smerge-ediff)
-	      (vc-resolve-conflicts name-A name-B))
-	  (message "File contains conflict markers"))))
-
-  (defun vc-default-resolve-select-yours (backend)
-    (goto-char (point-min))
-    (let ((found nil))
-      (while (re-search-forward (concat "^<<<<<<< "
-					(regexp-quote file-name) "\n") nil t)
-	(setq found t)
-	(replace-match "")
-	(if (not (re-search-forward "^=======\n" nil t))
-	    (error "Malformed conflict marker"))
-	(replace-match "")
-	(let ((start (point)))
-	  (if (not (re-search-forward "^>>>>>>> [0-9.]+\n" nil t))
-	      (error "Malformed conflict marker"))
-	  (delete-region start (point))))
-      found))
-
-  (defun vc-default-resolve-select-theirs (backend)
-    (goto-char (point-min))
-    (while (re-search-forward (concat "^<<<<<<< "
-				      (regexp-quote file-name) "\n") nil t)
-      (let ((start (match-beginning 0)))
-	(if (not (re-search-forward "^=======\n" nil t))
-	    (error "Malformed conflict marker"))
-	(delete-region start (point))
-	(if (not (re-search-forward "^>>>>>>> [0-9.]+\n" nil t))
-	    (error "Malformed conflict marker"))
-	(replace-match "")))
-    t)
-
-  (defun vc-default-resolve-select-original (backend)
-    nil)
-
-  (defun vc-resolve-conflicts (&optional name-A name-B)
-    "Invoke ediff to resolve conflicts in the current buffer.
-The conflicts must be marked with rcsmerge conflict markers."
-    (interactive)
-    (vc-ensure-vc-buffer)
-    (let* ((found nil)
-	   (file-name (file-name-nondirectory buffer-file-name))
-	   (backend (vc-backend buffer-file-name))
-	   (your-buffer   (generate-new-buffer
-			   (concat "*" file-name
-				   " " (or name-A "WORKFILE") "*")))
-	   (other-buffer  (generate-new-buffer
-			   (concat "*" file-name
-				   " " (or name-B "CHECKED-IN") "*")))
-	   (ancestor-buffer (generate-new-buffer
-			     (concat "*" file-name
-				     " " (or name-B "ORIGINAL") "*")))
-	   (result-buffer (current-buffer)))
-      (save-excursion
-	(set-buffer your-buffer)
-	(erase-buffer)
-	(insert-buffer result-buffer)
-	(if (not (vc-call-backend backend 'resolve-select-yours))
-	    (progn
-	      (kill-buffer your-buffer)
-	      (kill-buffer other-buffer)
-	      (kill-buffer ancestor-buffer)
-	      (error "No conflict markers found")))
-      
-	(set-buffer other-buffer)
-	(erase-buffer)
-	(insert-buffer result-buffer)
-	(vc-call-backend backend 'resolve-select-theirs)
-
-	(set-buffer ancestor-buffer)
-	(erase-buffer)
-	(insert-buffer result-buffer)
-	(goto-char (point-min))
-	(if (not (vc-call-backend backend 'resolve-select-original))
-	    (progn
-	      (kill-buffer ancestor-buffer)
-	      (setq ancestor-buffer nil)))
-
-	(let ((config (current-window-configuration)))
-
-	  ;; Fire up ediff.
-
-	  (set-buffer
-	   (if ancestor-buffer
-	       (ediff-merge-buffers-with-ancestor your-buffer other-buffer
-						  ancestor-buffer)
-	     (let ((ediff-default-variant 'default-B))
-	       (ediff-merge-buffers your-buffer other-buffer))))
-
-	  ;; Ediff is now set up, and we are in the control buffer.
-        ;; Do a few further adjustments and take precautions for exit.
-
-	  (make-local-variable 'vc-ediff-windows)
-	  (setq vc-ediff-windows config)
-	  (make-local-variable 'vc-ediff-result)
-	  (setq vc-ediff-result result-buffer)
-	  (make-local-variable 'ediff-quit-hook)
-	  (setq ediff-quit-hook
-		(lambda ()
-		  (let ((buffer-A ediff-buffer-A)
-			(buffer-B ediff-buffer-B)
-			(buffer-C ediff-buffer-C)
-			(result vc-ediff-result)
-			(windows vc-ediff-windows))
-		    (ediff-cleanup-mess)
-		    (set-buffer result)
-		    (erase-buffer)
-		    (insert-buffer buffer-C)
-		    (kill-buffer buffer-A)
-		    (kill-buffer buffer-B)
-		    (kill-buffer buffer-C)
-		    (set-window-configuration windows)
-		    (message "Conflict resolution finished; you may save the buffer"))))
-	  (message "Please resolve conflicts now; exit ediff when done")
-	  nil)))))
-
-(defvar vc-p4-change-times nil
-  "Alist of change numbers (represented as strings) and their age with
-respect to the current time.  Set and used when annotating a Perforce
-file in VC.")
 
 (defcustom vc-p4-require-p4config nil
   "*If non-nil and the `P4CONFIG' environment variable is set, then
@@ -252,12 +87,19 @@ to t."
   :type 'boolean
   :group 'vc)
 
-(defcustom vc-p4-annotate-command "p4pr"
-  "*Specifies the name of a command to call to annotate Perforce
-files.  I recommend //guest/jonathan_kamens/p4pr.perl in the Perforce
-repository public.perforce.com:1666."
+(defcustom vc-p4-annotate-command nil
+  "*Specifies the name of a command to call to annotate Perforce files.  
+If nil, then `vc-p4-annotate-command-internal' will be used.
+I recommend //guest/jonathan_kamens/p4pr.perl in the Perforce
+repository public.perforce.com:1666.  Note that you need a version of
+this script which accept `--after=date', if you want to be able to
+specify a starting date when you run C-u C-x v g."
   :type 'string
   :group 'vc)
+
+
+(defun vc-p4-create-repo ()
+  (error "create-repo not supported yet for P4"))
 
 (defun vc-p4-registered (file)
   "Return non-nil is FILE is handled by Perforce."
@@ -265,85 +107,94 @@ repository public.perforce.com:1666."
 	   (getenv "P4CONFIG")
 	   (not (vc-p4-find-p4config (file-name-directory file))))
       nil
-    (let ((fstat (p4-lowlevel-fstat file nil t)))
-      (if (not fstat)
+    (let* ((fstat (p4-lowlevel-fstat file nil t))
+	   (action (cdr (or (assoc "action" fstat)
+			    (assoc "headAction" fstat)))))
+      (if (or (not fstat)
+	      (string= action "delete"))
 	  nil
 	; This sets a bunch of VC properties
 	(vc-p4-state file fstat)
 	t))))
 
-(defun vc-p4-state (file &optional fstat-list force)
-  "Returns the current version control state of FILE in Perforce.  If
-optional FSTAT-LIST is non-nil, use that list of attributes from
-p4-lowlevel-fstat instead of calling it.  If optional FORCE is
-non-nil, refetch all properties even if properties were previously
-fetched."
+(defun vc-p4-state (file &optional fstat-list force dont-compare-nonopened)
+  "Returns the current version control state of FILE in Perforce.
+If optional FSTAT-LIST is non-nil, use that list of attributes
+from p4-lowlevel-fstat instead of calling it.  If optional FORCE
+is non-nil, refetch all properties even if properties were
+previously fetched.  If DONT-COMPARE-NONOPENED is non-nil, don't
+compare non-open files to the depot version."
   (if (and (not force) (vc-file-getprop file 'vc-p4-did-fstat))
       (vc-file-getprop file 'vc-state)
-    (let* (
-	   (alist (or fstat-list (p4-lowlevel-fstat file nil)))
-	   (headRev (cdr (assoc "headRev" alist)))
-	   (haveRev (cdr (assoc "haveRev" alist)))
-	   (depotFile (cdr (assoc "depotFile" alist)))
-	   (action  (cdr (assoc "action" alist)))
-	   (state (if action
-		      (let ((opened (p4-lowlevel-opened file)))
-			(if (string-match " by \\([^@]+\\)@" opened)
-			    (match-string 1 opened)
-			  (if (equal headRev haveRev)
-			      'edited
-			    'needs-merge)))
-		    (if (p4-lowlevel-diff-s file "e")
-			'unlocked-changes
-		      (if (equal headRev haveRev)
-		      'up-to-date
-		      'needs-patch))))
-	   )
-      (vc-file-setprop file 'vc-p4-did-fstat t)
-      (vc-file-setprop file 'vc-p4-depot-file depotFile)
-      (vc-file-setprop file 'vc-p4-action action)
-      (vc-file-setprop file 'vc-backend 'P4)
-      (vc-file-setprop file 'vc-checkout-model 'announce)
-      (vc-file-setprop file 'vc-latest-version headRev)
-      (vc-file-setprop file 'vc-name file)
-      (vc-file-setprop file 'vc-state state)
-      (vc-file-setprop file 'vc-workfile-version haveRev)
-      state)))
+    (let ((alist (or fstat-list (p4-lowlevel-fstat file nil t))))
+      (if (null alist)
+          'unregistered
+        (let* (
+               (headRev (cdr (assoc "headRev" alist)))
+               (haveRev (cdr (assoc "haveRev" alist)))
+               (depotFile (cdr (assoc "depotFile" alist)))
+               (action  (cdr (assoc "action" alist)))
+               (headAction (cdr (assoc "headAction" alist)))
+               (state 
+                (cond
+                 ((string= action "delete")
+                  'removed)
+                 (action
+                  (let ((opened (p4-lowlevel-opened file)))
+                    (if (string-match " by \\([^@]+\\)@" opened)
+                        (match-string 1 opened)
+                      (if (equal headRev haveRev)
+                          (if (string= action "add") 'added 'edited)
+                        'needs-merge))))
+                 ((and (file-exists-p file)
+		       (not dont-compare-nonopened)
+                       (p4-lowlevel-diff-s file "e"))
+                  'unlocked-changes)
+                 ((or
+                   (equal headRev haveRev)
+                   (and (null haveRev) (string= headAction "delete")))
+                  'up-to-date)
+                 (t
+                  'needs-patch)))
+               )
+          (vc-file-setprop file 'vc-p4-did-fstat t)
+          (vc-file-setprop file 'vc-p4-depot-file depotFile)
+          (vc-file-setprop file 'vc-p4-action action)
+          (vc-file-setprop file 'vc-backend 'P4)
+          (vc-file-setprop file 'vc-checkout-model 'announce)
+          (vc-file-setprop file 'vc-latest-version headRev)
+          (vc-file-setprop file 'vc-name file)
+          (vc-file-setprop file 'vc-state state)
+          (vc-file-setprop file 'vc-workfile-version haveRev)
+          state)))))
 
-; Here's something that would work faster, but I'm not going to
-; actually try to use this unless I find that it's really too slow to
-; just do all the work all the time.
-;(defun vc-p4-state-heuristic (file)
-;  "Estimates the current version control state of FILE in Perforce."
-;  (if (and (file-exists-p file)
-;	   (file-writable-p file))
-;      'edited
-;    'up-to-date))
+(defun vc-p4-dir-status (dir update-function)
+  "Find information for `vc-dir'."
+  ;; XXX: this should be asynchronous.
+  (let ((lists (p4-lowlevel-fstat 
+                (format "%s/..." (directory-file-name (expand-file-name dir)))
+                nil t)))
+    (when (stringp (caar lists))
+      (setq lists (list lists)))
+    (dolist (this-list lists)
+      (let* ((this-file (cdr (assoc "clientFile" this-list)))
+             (state (vc-p4-state this-file this-list t t)))
+        (unless (eq state 'up-to-date)
+          (funcall update-function
+                   (list
+                    (list (file-relative-name this-file dir) state))
+                   t))))
+    (funcall update-function nil nil)))
 
-(defun vc-p4-state-heuristic (file)
-  (vc-p4-state file))
-
-(defun vc-p4-dir-state (dir)
-  "Determines the current version control state of the files in DIR in
-Perforce and sets the appropriate VC properties."
-  (let ((lists (p4-lowlevel-fstat (format "%s/*" dir) nil t))
-	this-list this-file this-action)
-    (if (stringp (caar lists))
-	(setq lists (list lists)))
-    (while lists
-      (setq this-list (car lists)
-	    lists (cdr lists)
-	    this-file (cdr (assoc "clientFile" this-list))
-	    this-action (cdr (or (assoc "action" this-list)
-				 (assoc "headAction" this-list))))
-      (if (and this-file
-	       (not (string= this-action "delete")))
-	  (vc-p4-state this-file this-list)))))
-
-(defun vc-p4-workfile-version (file)
+(defun vc-p4-working-revision (file)
   "Returns the Perforce version of FILE."
   (vc-p4-state file)
   (vc-file-getprop file 'vc-workfile-version))
+
+(defun vc-p4-previous-revision (file rev)
+  (let ((newrev (1- (string-to-number rev))))
+    (when (< 0 newrev)
+      (number-to-string newrev))))
 
 (defun vc-p4-latest-on-branch-p (file)
   "Returns non-nil if the Perforce version of FILE is the head
@@ -360,6 +211,7 @@ revision."
   "Returns non-nil if FILE is unchanged from the version in Perforce."
   (let ((state (vc-p4-state file)))
     (and (not (equal (vc-file-getprop file 'vc-p4-action) "add"))
+         (not (equal (vc-file-getprop file 'vc-p4-action) "delete"))
 	 (or (equal state 'up-to-date)
 	     (equal state 'needs-patch)
 	     (p4-lowlevel-diff-s file "r")))))
@@ -383,12 +235,35 @@ special case of a Perforce file that is added but not yet committed."
            ;; for 'needs-patch and 'needs-merge.
            (concat "P4:" rev)))))
 
-(defun vc-p4-register (file &optional rev comment)
-  (if rev
+(defun vc-p4-register (files &optional rev comment)
+  (if (and rev (not (string= rev "1")))
       (error "Can't specify revision when registering Perforce file."))
-  (if comment
+  (if (and comment (not (string= comment "")))
       (error "Can't specify comment when registering Perforce file."))
-  (p4-lowlevel-add file))
+  ;; In emacs-23 vc-register has a list of files as a parameter,
+  ;; before it used to be just a single file. We don't support that
+  ;; interface yet, so just use the first file in the list.
+  (let* ((file (if (listp files) (car files) files))
+	 (fstat (p4-lowlevel-fstat file nil t))
+	 (action (cdr (assoc "action" fstat))))
+    (if (string= action "delete")
+	(if (yes-or-no-p 
+	     "File already opened for delete; revert and edit it? ")
+	    (progn
+	      (if (yes-or-no-p "Preserve current contents? ")
+		  (let ((tempfile (format "%s.vc-register~" file)))
+		    (rename-file file tempfile)
+		    (p4-lowlevel-revert file)
+		    (delete-file file)
+		    (rename-file tempfile file))
+		(p4-lowlevel-revert file))
+	      (p4-lowlevel-edit file))
+	  (error "File %s already opened for delete." file))
+      (p4-lowlevel-add file))))
+
+(defun vc-p4-init-revision ()
+  "Returns `1', the default initial version for Perforce files."
+  "1")
 
 (defun vc-p4-responsible-p (file)
   "Returns true if FILE refers to a file or directory that is
@@ -402,17 +277,22 @@ administered by Perforce."
 				      (file-name-as-directory file)
 				    file)))))
 
-(defun vc-p4-checkin (file rev comment)
-  "Check FILE into Perforce.  Error if REV is non-nil.  Check in with
+(defun vc-p4-find-version (file rev buffer)
+  (p4-lowlevel-print file rev buffer t))
+
+(defun vc-p4-checkin (files rev comment)
+  "Check FILES into Perforce.  Error if REV is non-nil.  Check in with
 comment COMMENT."
   (if rev
       (error "Can't specify revision for Perforce checkin."))
-  (let* ((default-directory (file-name-directory file))
+  (let* (;; XXX: default-directory?  this should work for most (all?) cases
+	 (default-directory (file-name-directory (car files)))
 	 (change-buffer (p4-lowlevel-change))
 	 (indent-tabs-mode 1)
 	 insertion-start change-number)
-    (if (vc-p4-has-unresolved-conflicts-p file)
-	(error "File %s has unresolved conflicts" file))
+    (dolist (file files)
+      (if (vc-p4-has-unresolved-conflicts-p file)
+	  (error "File %s has unresolved conflicts" file)))
     (save-excursion
       (set-buffer change-buffer)
       (goto-char (point-min))
@@ -423,14 +303,16 @@ comment COMMENT."
       (indent-rigidly insertion-start (point) 8)
       (re-search-forward "^Files:\\s-*\n")
       (delete-region (point) (point-max))
-      (insert "\t" (vc-file-getprop file 'vc-p4-depot-file) "\n")
+      (dolist (file files)
+	(insert "\t" (vc-file-getprop file 'vc-p4-depot-file) "\n"))
       (setq change-number (p4-lowlevel-change (current-buffer) t))
       (p4-lowlevel-change (current-buffer) change-number)
       (p4-lowlevel-submit (current-buffer))
       ; Update its properties
-      (vc-p4-state file nil t)
-      (vc-mode-line file))))
+      (dolist (file files)
+	(vc-p4-state file nil t)))))
 
+;;; FIXME: this should not have a DESTFILE argument
 (defun vc-p4-checkout (file &optional editable rev destfile)
   (if (and editable destfile (not (string= file destfile)))
       (error "Can't lock a Perforce file in an alternate location."))
@@ -457,8 +339,17 @@ comment COMMENT."
 
 (defun vc-p4-revert (file contents-done)
   "Revert FILE in Perforce.  Ignores CONTENTS-DONE."
-  (p4-lowlevel-revert file)
-  (vc-p4-state file nil t))
+  (let ((action (vc-file-getprop file 'vc-p4-action)))
+    (cond
+     ((null action)
+      ;; If Perforce doesn't believe that we edited the file, we have
+      ;; to use sync instead of revert.
+      (p4-lowlevel-sync file (vc-working-revision file) t))
+     (t
+      (p4-lowlevel-revert file)))
+    (if (string= action "add")
+	(vc-file-clearprops file)
+      (vc-p4-state file nil t))))
 
 (defun vc-p4-merge (file rev1 rev2)
   "Merge changes into Perforce FILE from REV1 to REV2."
@@ -499,12 +390,28 @@ comment COMMENT."
   (let ((default-directory (file-name-directory file)))
     (p4-lowlevel-reopen file)))
 
-(defun vc-p4-print-log (file)
+(defun vc-p4-print-log (files &optional buffer shortlog revision limit)
   "Print Perforce log for FILE into *vc* buffer."
-  (let ((inhibit-read-only t))
-    (set-buffer (get-buffer-create "*vc*"))
-    (erase-buffer)
-    (p4-lowlevel-filelog file (current-buffer) t t)))
+  ;; `log-view-mode' needs to have the file name in order to function
+  ;; correctly. "p4 logview" does not print it, so we insert it here by
+  ;; hand.
+
+  ;; `vc-do-command' creates the buffer, but we need it before running
+  ;; the command.
+  (vc-setup-buffer buffer)
+  (let* ((inhibit-read-only t)
+	 ;; In emacs-23 vc-print-log has a list of files as a
+	 ;; parameter, before it used to be just a single file. We
+	 ;; don't support that interface yet, so just use the first
+	 ;; file in the list.
+	 (file (if (listp files) (car files) files))
+	 (default-directory (file-name-directory file)))
+    (with-current-buffer
+	buffer
+      (p4-lowlevel-filelog file (current-buffer) (not shortlog) nil limit)
+      ;; Insert the file name at the beginning.
+      (goto-char (point-min))
+      (insert "File:        " (file-name-nondirectory file) "\n"))))
 
 (defun vc-p4-show-log-entry (version)
   "Make sure Perforce log entry for VERSION is displayed in the
@@ -578,63 +485,389 @@ files under the default directory otherwise."
 	  (kill-line)))
     (message "Computing change log entries... done")))
 
-(defun vc-p4-diff (file &optional rev1 rev2)
-  "Do a Perforce diff into the *vc-diff* buffer."
-  (let ((buffer (get-buffer-create "*vc-diff*"))
-	(workfile-version (vc-file-getprop file 'vc-workfile-version))
-	(inhibit-read-only t))
-    (if (not rev1)
-	(if (not rev2)
-	    (p4-lowlevel-diff file buffer)
-	  (p4-lowlevel-diff2 file file workfile-version rev2 buffer))
-      (if rev2
-	  (p4-lowlevel-diff2 file file rev1 rev2 buffer)
-	(p4-lowlevel-diff file rev1 buffer)))))
+(defvar log-view-message-re)
+(defvar log-view-file-re)
+(defvar log-view-font-lock-keywords)
+
+(define-derived-mode vc-p4-log-view-mode log-view-mode "P4-Log-View"
+  (require 'add-log) ;; we need the faces add-log
+  (set (make-local-variable 'log-view-file-re) "^File:[ \t]+\\(.+\\)")
+  (set (make-local-variable 'log-view-message-re)
+       "^#\\([0-9]+\\) .*")
+  (set (make-local-variable 'log-view-font-lock-keywords)
+       (append `((,log-view-message-re . 'log-view-message-face)
+		 (,log-view-file-re . 'log-view-file-face))
+	'(("^user:[ \t]+\\([A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+\\)"
+	   (1 'change-log-email))
+	  ;; Handle the case:
+	  ;; user: FirstName LastName <foo@bar>
+	  ("^user:[ \t]+\\([^<(]+?\\)[ \t]*[(<]\\([A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+\\)[>)]"
+	   (1 'change-log-name)
+	   (2 'change-log-email))
+	  ("^date: \\(.+\\)" (1 'change-log-date))
+	  ("^summary:[ \t]+\\(.+\\)" (1 'log-view-message))))))
+
+(defun vc-p4-diff (file-or-files &optional rev1 rev2 buff)
+  "Do a Perforce diff."
+  (let* ((buffer (or (bufferp buff) (get-buffer-create "*vc-diff*")))
+         (files (if (atom file-or-files) (list file-or-files) file-or-files))
+         (inhibit-read-only t))
+    (cond
+     ((and (null rev1) (null rev2))
+      (let (added modified deleted)
+        (dolist (file files)
+          (cond
+           ((string= (vc-file-getprop file 'vc-p4-action) "add")
+            (push file added))
+           ((string= (vc-file-getprop file 'vc-p4-action) "delete")
+            (push file deleted))
+           (t
+            (push file modified))))
+        (setq added (nreverse added)
+              modified (nreverse modified)
+              deleted (nreverse deleted))
+
+        ;; For added and deleted files, Perforce can't give us what we
+        ;; want (diff against /dev/null), so we do it ourselves.
+        (with-current-buffer buffer
+          (erase-buffer)
+          (dolist (file added)
+            (apply 'call-process
+                   (append
+                    (list diff-command
+                          nil
+                          buffer
+                          nil)
+                    (if (listp diff-switches)
+                        diff-switches
+                      (list diff-switches))
+                    (list "/dev/null"
+                          file))))
+          (dolist (file deleted)
+            (with-temp-buffer
+              (p4-lowlevel-print file nil (current-buffer) :quiet)
+              (goto-char (point-min))
+              (while (search-forward-regexp "^text: " nil t)
+                (replace-match "" nil nil))
+              (apply 'call-process-region
+                     (point-min) (point-max)
+                     diff-command
+                     :delete
+                     buffer
+                     nil
+                     (append
+                      (list "-N"
+                            ;; Not sure this is the most useful labeling...
+                            (concat "--label=" (vc-file-getprop file 'vc-p4-depot-file))
+                            (concat "--label=" file))
+                      (if (listp diff-switches)
+                          diff-switches
+                        (list diff-switches))
+                      (list "-"
+                            "/dev/null")))))
+
+          ;; Now diff all the modified files in a single call to the server.
+          (when modified
+            (let (temp-buffer)
+              (unwind-protect
+                  (progn
+                    (setq temp-buffer (p4-lowlevel-diff modified))
+                    (insert-buffer-substring temp-buffer))
+                (when (buffer-live-p temp-buffer)
+                  (kill-buffer temp-buffer))))))))
+
+     (t
+      ;; At this point things get complicated.  Let's just make one
+      ;; request per file and hope the server administrator doesn't
+      ;; mind.
+      (with-current-buffer buffer
+        (let (temp-buffer)
+          (dolist (file files)
+            (setq temp-buffer
+                  (cond
+                   ((and (not rev1) rev2)
+                    (p4-lowlevel-diff2 file file
+                                       (vc-file-getprop file 'vc-workfile-version)
+                                       rev2))
+                   ((and rev1 rev2)
+                    (p4-lowlevel-diff2 file file rev1 rev2))
+                   ((and rev1 (not rev2))
+                    (p4-lowlevel-diff file rev1))))
+            (insert-buffer-substring temp-buffer)
+            (kill-buffer temp-buffer))))))
+
+    ;; Emacs doesn't understand Perforce's file headers, so we add
+    ;; them ourselves.
+    (with-current-buffer buffer
+      (goto-char (point-min))
+      (while (re-search-forward "^==== \\(.+#[0-9]+\\) - \\(.+\\) ====$" nil t)
+        (let ((depot-name (match-string 1))
+              (filename (match-string 2)))
+          (insert "\n--- " depot-name
+                  "\n+++ " filename))))))
 
 (defun vc-p4-annotate-command (file buffer &optional version)
   "Annotate FILE into BUFFER file using `vc-p4-annotate-command'.
 Annotate version VERSION if it's specified."
-  (let ((full-file (if version
-		       (concat file 
-			       (p4-lowlevel-canonicalize-revision version))
-		     file))
-	(now (car (current-time)))
-	log-buffer times)
-    (call-process vc-p4-annotate-command
-		  nil
-		  buffer
-		  nil
-		  full-file)
-    ; Calculate the date of each revision, for later
-    (setq log-buffer (p4-lowlevel-filelog file nil nil t))
-    (set-buffer log-buffer)
-    (goto-char (point-min))
-    (while (re-search-forward (concat "^#[0-9]+ change \\([0-9]+\\) .* on \\("
-				      "[0-9]+\\)/\\([0-9]+\\)/\\([0-9]+\\)")
-			      nil t)
-      (let* ((change-no (match-string 1))
-	     (year (string-to-number (match-string 2)))
-	     (month (string-to-number (match-string 3)))
-	     (day (string-to-number (match-string 4)))
-	     (then (car (encode-time 0 0 0 day month year)))
-	     (difference (- now then)))
-	(setq times (cons (cons change-no difference)
-			  times))))
-    (set-buffer buffer)
-    (setq vc-p4-change-times times)))
+  (if vc-p4-annotate-command
+      (let ((full-file (if version
+			   (concat file 
+				   (p4-lowlevel-canonicalize-revision version))
+			 file))
+	    (starting-date (if current-prefix-arg
+			       (read-string "Starting date: (default none) ")))
+	    log-buffer times args)
+	(setq args (append (list  buffer nil vc-p4-annotate-command nil)
+			   (if starting-date
+			       (list "--after" starting-date))
+			   (list full-file)))
+	(apply 'vc-do-command args))
+    (vc-p4-annotate-command-internal file buffer version)))
 
-(defun vc-p4-annotate-difference (point)
-  "Returns the difference between the age of the Perforce annotation
-line at point and the current time."
-  (let ((regex (concat "^[[:space:]]*[[:digit:]]+[[:space:]]+"
-		       "[^[:space:]]+[[:space:]]+\\([[:digit:]]+\\)"))
-	match)
-    (if (and (or (looking-at regex)
-		 (and (re-search-forward regex nil t)
-		      (forward-line 0)))
-	     (setq match (assoc (match-string 1) vc-p4-change-times)))
-	(cdr match)
-      nil)))
+;;; Adapted from p4.el
+(defun vc-p4-read-output (buffer)
+  "Reads first line of BUFFER and returns it.
+Read lines are deleted from buffer."
+  (save-excursion
+    (set-buffer buffer)
+    (goto-char (point-min))
+    (forward-line)
+    (let ((line (buffer-substring (point-min) (point))))
+      (if (string= line "")
+	  nil
+	(delete-region (point-min) (point))
+	;; remove trailing newline
+	(if (equal (substring line (1- (length line)) (length line)) "\n")
+	    (substring line 0 (1- (length line)))
+	  line)))))
+
+;;; Adapted from p4.el
+(defun vc-p4-annotate-command-internal (file buffer &optional version)
+  "Execute \"hg annotate\" on FILE, inserting the contents in BUFFER.
+Optional arg VERSION is a version to annotate from."
+  ;; XXX maybe not needed, but just in case.
+  (vc-setup-buffer buffer)
+  ;;   (with-current-buffer buffer
+  (let ((file-name file)
+	(file-spec file)
+	(blame-branch-regex
+	 "^\\.\\.\\. \\.\\.\\. branch from \\(//[^#]*\\)#")
+	(blame-change-regex   
+	 (concat "^\\.\\.\\. #"     "\\([0-9]+\\)"  ;; revision
+		 "\\s-+change\\s-+" "\\([0-9]+\\)"  ;; change
+		 "\\s-+"            "\\([^ \t]+\\)" ;; type
+		 "\\s-+on\\s-+"     "\\([^ \t]+\\)" ;; date	   
+		 "\\s-+by\\s-+"     "\\([^ \t]+\\)" ;; author
+		 "@"))
+	head-name ;; file spec of the head revision for this blame assignment
+	branch-p  ;; have we tracked into a branch?
+	cur-file ;; file name of the current branch during blame assignment
+	change ch-alist fullname head-rev headseen)
+
+    ;; we asked for blame constrained by a change number
+    (if (string-match "\\(.*\\)@\\([0-9]+\\)" file-spec)
+	(progn
+	  (setq file-name (match-string 1 file-spec))
+	  (setq change (string-to-number (match-string 2 file-spec)))))
+
+    ;; we asked for blame constrained by a revision
+    (if (string-match "\\(.*\\)#\\([0-9]+\\)" file-spec)
+	(progn
+	  (setq file-name (match-string 1 file-spec))
+	  (setq head-rev (string-to-number (match-string 2 file-spec)))))
+
+    ;; make sure the filespec is unambiguous
+    ;;(p4-exec-p4 buffer (list "files" file-name) t)
+    (with-temp-buffer
+      (vc-p4-command (current-buffer) nil nil "files" file-name)
+      (save-excursion
+	;; (set-buffer buffer)
+	(if (> (count-lines (point-min) (point-max)) 1)
+	    (error "File pattern maps to more than one file.")))
+      )
+    ;; get the file change history:
+    ;;(p4-exec-p4 buffer (list "filelog" "-i" file-spec) t)
+    (with-temp-buffer
+      (vc-p4-command (current-buffer) 0 nil "filelog" "-i" file-spec)
+      (setq fullname (vc-p4-read-output (current-buffer))
+	    cur-file  fullname
+	    head-name fullname)
+
+      ;; parse the history:
+      (save-excursion
+	;; (set-buffer buffer)
+	(goto-char (point-min))
+	(while (< (point) (point-max))
+
+	  ;; record the current file name (and the head file name,
+	  ;; if we have not yet seen one):
+	  (if (looking-at "^\\(//.*\\)$")
+	      (setq cur-file (match-string 1)))
+
+	  ;; a non-branch change:
+	  (if (looking-at blame-change-regex)
+	      (let ((rev (string-to-number (match-string 1)))
+		    (ch (string-to-number (match-string 2)))
+		    (op (match-string 3))
+		    (date (match-string 4))
+		    (author (match-string 5)))
+		(cond
+		 ;; after the change constraint, OR
+		 ;; after the revision constraint _for this file_
+		 ;;   [remember, branches complicate this]:
+		 ((or (and change   (< change ch))
+		      (and head-rev (< head-rev rev)
+			   (string= head-name cur-file))) nil)
+	       
+		 ;; file has been deleted, can't assign blame:
+		 ((string= op "delete") 
+		  (if (not headseen) (goto-char (point-max))))
+
+		 ;; OK, we actually want to look at this one:
+		 (t
+		  (setq ch-alist
+			(cons
+			 (cons ch (list rev date author cur-file)) ch-alist))
+		  (if (not head-rev) (setq head-rev rev))
+		  (setq headseen t)) ))
+
+	    ;; not if we have entered a branch (this used to be used, isn't
+	    ;; right now - maybe again later:
+	    (if (and headseen (looking-at blame-branch-regex))
+		(setq branch-p t)) )
+	  (forward-line))))
+    
+    (if (< (length ch-alist) 1)
+	(error "Head revision not available"))
+  
+    (let ((base-ch (int-to-string (caar ch-alist)))
+	  (ch-buffer (get-buffer-create " *p4-ch-buf*"))
+	  (tmp-alst (copy-alist ch-alist)))
+      ;; (p4-exec-p4 ch-buffer (list "print" "-q" (concat cur-file "@" base-ch)) t)
+      (vc-p4-command ch-buffer nil nil "print" "-q" (concat cur-file "@" base-ch))
+      (save-excursion
+	(set-buffer ch-buffer)
+	(goto-char (point-min))
+	(while (re-search-forward ".*\n" nil t)
+	  (replace-match (concat base-ch "\n"))))
+      (while (> (length tmp-alst) 1)
+	(let ((ch-1 (car (car  tmp-alst)))
+	      (ch-2 (car (cadr tmp-alst)))
+	      (file1 (nth 3 (cdr (car  tmp-alst))))
+	      (file2 (nth 3 (cdr (cadr tmp-alst))))
+	      (blame-revision-regex
+	       (concat "^\\([0-9]+\\),?"
+		       "\\([0-9]*\\)"
+		       "\\([acd]\\)"
+		       "\\([0-9]+\\),?"
+		       "\\([0-9]*\\)"))
+	      ins-string)
+	  (setq ins-string (format "%d\n" ch-2))
+	  ;; (p4-exec-p4 buffer (list "diff2"
+	  ;; 			   (format "%s@%d" file1 ch-1)
+	  ;; 			   (format "%s@%d" file2 ch-2)) t)
+	  (with-temp-buffer 
+	    (vc-p4-command (current-buffer) nil nil
+			   "diff2" (format "%s@%d" file1 ch-1) 
+			   (format "%s@%d" file2 ch-2))
+	    (save-excursion
+	      ;;(set-buffer buffer)
+	      (goto-char (point-max))
+	      (while (re-search-backward blame-revision-regex nil t)
+		(let ((la (string-to-number (match-string 1)))
+		      (lb (string-to-number (match-string 2)))
+		      (op (match-string 3))
+		      (ra (string-to-number (match-string 4)))
+		      (rb (string-to-number (match-string 5))))
+		  (if (= lb 0)
+		      (setq lb la))
+		  (if (= rb 0)
+		      (setq rb ra))
+		  (cond ((string= op "a")
+			 (setq la (1+ la)))
+			((string= op "d")
+			 (setq ra (1+ ra))))
+		  (save-excursion
+		    (set-buffer ch-buffer)
+		    (goto-line la)
+		    (let ((beg (point)))
+		      (forward-line (1+ (- lb la)))
+		      (delete-region beg (point)))
+		    (while (<= ra rb)
+		      (insert ins-string)
+		      (setq ra (1+ ra))))))))
+	  (setq tmp-alst (cdr tmp-alst))))
+      ;; (p4-noinput-buffer-action "print" nil t
+      ;; 			(list (format "%s#%d" fullname head-rev))
+      ;; 			t)
+      (vc-p4-command buffer nil nil
+		     "print" (format "%s#%d" fullname head-rev))
+      (let (line cnum (old-cnum 0) change-data
+		 (blame-index-regex
+		  (concat " *\\([0-9]+/[0-9]+/[0-9]+\\)" ;; date
+			  "\\s-+\\([^ \t]*\\)"           ;; author
+			  " *\\([0-9]+\\)"               ;; change
+			  " *\\([0-9]+\\)"               ;; revision
+			  " "))
+		 xth-rev xth-date xth-auth xth-file)
+	(save-excursion
+	  (set-buffer buffer)
+	  (goto-line 2)
+	  (move-to-column 0)
+	  (insert (format "%10s %7s %6s %4s\n" "Date" "Author" "Change"  "Rev"))
+	  (while (setq line (vc-p4-read-output ch-buffer))
+	    (setq cnum (string-to-number line))
+	    (if (and nil (= cnum old-cnum))
+		(insert (format "%29s " ""))
+
+	      ;; extract the change data from our alist: remember,
+	      ;; `eq' works for integers so we can use assq here:
+	      (setq change-data (cdr (assq cnum ch-alist))
+		    xth-rev     (nth 0 change-data)
+		    xth-date    (nth 1 change-data)
+		    xth-auth    (nth 2 change-data)
+		    xth-file    (nth 3 change-data))
+	      
+	      (insert
+	       (format "%10s %7s %6d %4d " xth-date xth-auth cnum xth-rev))
+	      (move-to-column 0)
+	      (if (looking-at blame-index-regex)
+		  (let ((nth-cnum (match-string 3))
+			(nth-revn (match-string 4))
+			(nth-user (match-string 2)))
+		    ;; truncate the user name:
+		    (let ((start (+ (match-beginning 2) 7))
+			  (end (match-end 2)))
+		      (if (> end start)
+			  (delete-region start end))))))
+	    (setq old-cnum cnum)
+	    (forward-line))))
+
+      (kill-buffer ch-buffer))))
+
+(defconst vc-p4-annotate-re 
+  (concat "^\\([[:digit:]/]+\\)[[:space:]]*[[:digit:]]+[[:space:]]+"
+	  "[^[:space:]]+[[:space:]]+\\([[:digit:]]+\\)"
+	  "[[:space:]]+\\([[:digit:]]+\\) "))
+
+(defun vc-p4-annotate-time ()
+  "Returns the time of the next Perforce annotation at or after point,
+as a floating point fractional number of days.
+Moves the point to the end of the annotation."
+  (when (looking-at vc-p4-annotate-re)
+    (goto-char (match-end 0))
+    (let ((timestr (match-string-no-properties 1)))
+      (string-match "\\([0-9]+\\)/\\([0-9]+\\)/\\([0-9]+\\)" timestr)
+      (vc-annotate-convert-time
+       (encode-time 0 0 0
+		  (string-to-number (match-string 3 timestr))
+		  (string-to-number (match-string 2 timestr))
+		  (string-to-number (match-string 1 timestr)))))))
+
+(defun vc-p4-annotate-extract-revision-at-line ()
+  (save-excursion
+    (beginning-of-line)
+    (if (looking-at vc-p4-annotate-re) (match-string-no-properties 3))))
 
 (defun vc-p4-previous-version (file rev)
   "Return the Perforce revision of FILE prior to REV."
@@ -643,7 +876,7 @@ line at point and the current time."
 (defun vc-p4-find-p4config (&optional dirname)
   "See if there is a $P4CONFIG file in DIRNAME or any of its parents.
 If DIRNAME is not specified, uses `default-directory'."
-  (let ((this-directory (or dirname default-directory))
+  (let ((this-directory (expand-file-name (or dirname default-directory)))
 	(p4config (getenv "P4CONFIG"))
 	child)
     (if (not p4config)
@@ -741,5 +974,10 @@ third subblock in each conflict block."
         (goto-char block-start)
         (insert replacement)))
     (if block-start t nil)))
+
+(defun vc-p4-command (buffer okstatus file &rest flags)
+  "A wrapper around `vc-do-command' for use in vc-p4.el.
+The difference to vc-do-command is that this function always invokes `p4'."
+  (apply 'vc-do-command buffer okstatus "p4" file flags))
 
 (provide 'vc-p4)
